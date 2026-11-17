@@ -6,33 +6,42 @@
 <title>日切放行</title>
 <script src="/static/vue.global.prod.js"></script>
 <style>
-  :root{--bg:#0b1220;--panel:#121a2b;--line:#243049;--text:#e8eefc;--muted:#93a0b8;--ok:#3ddc97;--bad:#ff6b6b;--accent:#4cc9f0}
+  :root{--bg:#0b1220;--panel:#121a2b;--line:#243049;--text:#e8eefc;--muted:#93a0b8;--ok:#3ddc97;--bad:#ff6b6b;--accent:#4cc9f0;--warn:#f6c453}
   *{box-sizing:border-box} body{margin:0;background:var(--bg);color:var(--text);font-family:"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif}
   .top{display:flex;align-items:center;gap:18px;padding:14px 20px;border-bottom:1px solid var(--line);background:#0e1626}
   .brand{font-weight:700;letter-spacing:.08em;font-size:18px}
   .brand small{display:block;color:var(--muted);font-weight:400;font-size:11px;letter-spacing:.02em;margin-top:2px}
-  .tabs{display:flex;gap:6px;flex:1}
+  .tabs{display:flex;gap:6px;flex:1;flex-wrap:wrap}
   .tabs button{background:transparent;border:1px solid transparent;color:var(--muted);padding:8px 12px;border-radius:999px;cursor:pointer}
   .tabs button.on{color:var(--text);border-color:var(--line);background:#18233a}
   .user{color:var(--muted);font-size:13px}
   .ghost{background:#18233a;border:1px solid var(--line);color:var(--text);padding:7px 10px;border-radius:8px;cursor:pointer}
-  main{padding:18px 20px 28px}
+  .ghost[disabled]{opacity:.4;cursor:not-allowed}
+  main{padding:14px 20px 28px}
+  .policy{display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin-bottom:14px;padding:10px 14px;border:1px solid #2c3b5c;border-radius:12px;background:#101a2e;font-size:13px}
+  .policy .chip{padding:3px 10px;border-radius:999px;background:#17324a;color:var(--accent);font-weight:700}
+  .policy .warn{color:var(--warn)}
   .grid{display:grid;grid-template-columns:1.2fr .8fr;gap:14px}
   .panel{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:14px}
   h2{margin:0 0 10px;font-size:15px;color:#c9d4ea}
+  h3{margin:14px 0 6px;font-size:13px;color:var(--muted)}
   table{width:100%;border-collapse:collapse;font-size:13px}
-  th,td{padding:8px 6px;border-bottom:1px solid var(--line);text-align:left}
+  th,td{padding:8px 6px;border-bottom:1px solid var(--line);text-align:left;vertical-align:top}
   th{color:var(--muted);font-weight:600}
   input,select{width:100%;background:#0b1220;border:1px solid var(--line);color:var(--text);border-radius:8px;padding:8px 10px;margin:4px 0 10px}
   .row{display:grid;grid-template-columns:1fr 1fr;gap:8px}
   .primary{background:var(--accent);color:#041018;border:0;padding:9px 12px;border-radius:8px;font-weight:700;cursor:pointer}
+  .primary[disabled]{opacity:.4;cursor:not-allowed}
   .mono{font-family:Consolas,"Courier New",monospace}
   .tag{display:inline-block;padding:2px 8px;border-radius:999px;font-size:12px;background:#1b2a22;color:var(--ok)}
   .tag.bad{background:#2a1518;color:var(--bad)}
+  .tag.warn{background:#2a2413;color:var(--warn)}
   .login{max-width:400px;margin:12vh auto;background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:22px}
   .err{color:var(--bad);min-height:18px;font-size:13px}
   .kpi{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-bottom:14px}
   .kpi .panel{padding:12px}.kpi b{display:block;font-size:22px;margin-top:4px}
+  .note{font-size:12px;color:var(--muted);line-height:1.6}
+  .detail{min-height:40px}
 </style>
 </head>
 <body>
@@ -54,23 +63,28 @@ createApp({
   setup(){
     const token=ref(localStorage.getItem('slicegate_token')||'');
     const user=ref(localStorage.getItem('slicegate_user')||'');
+    const role=ref(localStorage.getItem('slicegate_role')||'');
     const username=ref('admin'), password=ref('123456'), err=ref(''), tab=ref(0), actionErr=ref('');
-    const slices=ref([]), releases=ref([]), watermarks=ref([]);
+    const slices=ref([]), releases=ref([]), watermarks=ref([]), perms=ref(null), policy=ref(null), events=ref([]);
     const form=ref({slice_no:'SL-2026-11-03-east',biz_date:'2026-11-03',partition_key:'east',row_count:1000,expected_count:1000});
-    const releaseSliceId=ref(1), consumer=ref('ads_order');
-    const nav=['切片登记','完整度裁决','下游放行','消费水位'];
+    const releaseSliceId=ref(1), consumer=ref('ads_order'), detail=ref(null), detailErr=ref('');
+    const nav=['切片登记','完整度裁决','下游放行','消费水位','权限清册','鉴权事件'];
     const completeCnt=computed(()=>slices.value.filter(s=>s.completeness==='完整').length);
     const openCnt=computed(()=>slices.value.filter(s=>s.release_status!=='已放行').length);
+    const canWrite=computed(()=>role.value==='管理员');
     function auth(){return {Authorization:'Bearer '+token.value,'Content-Type':'application/json'};}
     async function login(){
       err.value='';
       const r=await fetch('/api/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username:username.value,password:password.value})});
       const j=await r.json(); if(!r.ok){err.value=j.detail||'登录失败';return;}
-      token.value=j.token; user.value=j.username;
-      localStorage.setItem('slicegate_token',j.token); localStorage.setItem('slicegate_user',j.username);
+      token.value=j.token; user.value=j.username; role.value=j.role;
+      localStorage.setItem('slicegate_token',j.token); localStorage.setItem('slicegate_user',j.username); localStorage.setItem('slicegate_role',j.role);
       await refresh();
     }
-    function logout(){token.value='';user.value='';localStorage.removeItem('slicegate_token');localStorage.removeItem('slicegate_user');}
+    function logout(){
+      token.value='';user.value='';role.value='';detail.value=null;
+      localStorage.removeItem('slicegate_token');localStorage.removeItem('slicegate_user');localStorage.removeItem('slicegate_role');
+    }
     async function loadJson(url){
       const r=await fetch(url,{headers:auth()});
       const j=await r.json().catch(()=>({}));
@@ -79,33 +93,77 @@ createApp({
     }
     async function refresh(){
       if(!token.value) return;
+      if(!role.value){
+        const me=await loadJson('/api/me'); if(me===null) return;
+        if(me.role){ role.value=me.role; user.value=me.username||user.value;
+          localStorage.setItem('slicegate_role',role.value); localStorage.setItem('slicegate_user',user.value); }
+      }
       const s=await loadJson('/api/slices'); if(s===null) return;
       slices.value=Array.isArray(s.items)?s.items:[];
       const rel=await loadJson('/api/releases'); if(rel===null) return;
       releases.value=Array.isArray(rel.items)?rel.items:[];
       const w=await loadJson('/api/watermarks'); if(w===null) return;
       watermarks.value=Array.isArray(w.items)?w.items:[];
-      if(slices.value.length) releaseSliceId.value=slices.value[0].id;
+      const p=await loadJson('/api/auth/permissions'); if(p===null) return;
+      perms.value=p;
+      const pol=await loadJson('/api/auth/policy'); if(pol===null) return;
+      policy.value=pol;
+      const ev=await loadJson('/api/auth/events'); if(ev===null) return;
+      events.value=Array.isArray(ev.items)?ev.items:[];
+      if(slices.value.length && !slices.value.some(x=>x.id===releaseSliceId.value)) releaseSliceId.value=slices.value[0].id;
     }
-    async function createSlice(){actionErr.value='';const r=await fetch('/api/slices',{method:'POST',headers:auth(),body:JSON.stringify(form.value)});const j=await r.json();if(!r.ok)actionErr.value=j.detail||'失败';await refresh();}
-    async function evaluate(id){await fetch('/api/slices/'+id+'/evaluate',{method:'POST',headers:auth()});await refresh();}
-    async function doRelease(){actionErr.value='';const r=await fetch('/api/slices/'+releaseSliceId.value+'/release',{method:'POST',headers:auth(),body:JSON.stringify({consumer:consumer.value})});const j=await r.json();if(!r.ok)actionErr.value=j.detail||'放行失败';await refresh();}
+    async function writeCall(url,body){
+      actionErr.value='';
+      const r=await fetch(url,{method:'POST',headers:auth(),body:body?JSON.stringify(body):undefined});
+      const j=await r.json().catch(()=>({}));
+      if(r.status===403){ actionErr.value=j.detail||'无权限：服务端已拒绝，零写入'; }
+      else if(!r.ok){ actionErr.value=j.detail||'操作失败'; }
+      await refresh();
+      return j;
+    }
+    async function createSlice(){ await writeCall('/api/slices',form.value); }
+    async function evaluate(id){ await writeCall('/api/slices/'+id+'/evaluate'); }
+    async function doRelease(){ await writeCall('/api/slices/'+releaseSliceId.value+'/release',{consumer:consumer.value}); }
+    async function recut(s){
+      const rc=prompt('重切实收条数（当前 '+s.row_count+'）',String(s.row_count));
+      if(rc===null) return;
+      const ec=prompt('重切期望条数（当前 '+s.expected_count+'）',String(s.expected_count));
+      if(ec===null) return;
+      await writeCall('/api/slices/'+s.id+'/recut',{row_count:Number(rc),expected_count:Number(ec)});
+    }
+    async function rollbackRelease(r){ if(!confirm('确认回拨放行流水 #'+r.id+'？水位将同步回退。')) return; await writeCall('/api/releases/'+r.id+'/rollback'); }
+    async function rollbackSliceById(id){ const s=slices.value.find(x=>x.id===id); if(!s) return; if(!confirm('确认回拨切片 '+s.slice_no+' 最近一次成功放行？')) return; await writeCall('/api/slices/'+s.id+'/rollback'); }
+    async function openDetail(id){
+      detailErr.value='';
+      const r=await fetch('/api/slices/'+id,{headers:auth()});
+      const j=await r.json().catch(()=>({}));
+      if(!r.ok){ detailErr.value=j.detail||'加载失败'; detail.value=null; return; }
+      detail.value=j;
+    }
     onMounted(()=>{if(token.value)refresh();});
-    return {token,user,username,password,err,tab,nav,slices,releases,watermarks,form,releaseSliceId,consumer,actionErr,completeCnt,openCnt,login,logout,createSlice,evaluate,doRelease};
+    return {token,user,role,username,password,err,tab,nav,slices,releases,watermarks,perms,policy,events,form,releaseSliceId,consumer,detail,detailErr,actionErr,completeCnt,openCnt,canWrite,login,logout,refresh,createSlice,evaluate,doRelease,recut,rollbackRelease,rollbackSliceById,openDetail};
   },
   template:`
   <div v-if="!token" class="login">
     <div class="brand">日切放行<small>分区切片完整度闸 · 本地 SQLite</small></div>
     <label>用户名</label><input v-model="username"/><label>密码</label><input type="password" v-model="password"/>
     <div class="err">{{err}}</div><button class="primary" style="width:100%" @click="login">进入控制台</button>
+    <p class="note">只读账号仅可查看；写入口由服务端按角色拦截。</p>
   </div>
   <div v-if="token">
     <div class="top">
       <div class="brand">日切放行<small>切片 → 完整度 → 放行 → 水位</small></div>
       <div class="tabs"><button v-for="(n,i) in nav" :key="n" :class="{on:tab===i}" @click="tab=i">{{n}}</button></div>
-      <div class="user">{{user}}</div><button class="ghost" @click="logout">退出</button>
+      <div class="user">{{user}} · {{role}}</div><button class="ghost" @click="logout">退出</button>
     </div>
     <main>
+      <div class="policy">
+        <span class="chip">鉴权口径 {{policy?.policy_code||'甲'}}</span>
+        <span>锁定 {{policy?.locked_on||'2026-11-17'}} · 当日不许换</span>
+        <span class="warn">{{policy?.rule||'非管理员角色写接口一律返回无权限且零写入'}}</span>
+        <span class="note">鉴权拦截册 SHA-256：<span class="mono">{{policy?.ledger?.sha256?.slice(0,16)||'—'}}</span> · {{policy?.ledger?.verified?'已校验':'未通过'}}</span>
+        <span v-if="!canWrite" class="tag warn">当前为只读角色：写按钮禁用，服务端同样 403 且零写入</span>
+      </div>
       <div class="kpi">
         <div class="panel">切片总数<b class="mono">{{slices.length}}</b></div>
         <div class="panel">已完整<b class="mono">{{completeCnt}}</b></div>
@@ -114,12 +172,17 @@ createApp({
       <div v-show="tab===0" class="grid">
         <div class="panel">
           <h2>在途切片</h2>
-          <table><thead><tr><th>切片号</th><th>日/区</th><th>实收</th><th>完整度</th><th></th></tr></thead>
+          <table><thead><tr><th>切片号</th><th>日/区</th><th>实收</th><th>完整度</th><th>放行态</th><th></th></tr></thead>
           <tbody><tr v-for="s in slices" :key="s.id">
             <td class="mono">{{s.slice_no}}</td><td>{{s.biz_date}} / {{s.partition_key}}</td>
             <td class="mono">{{s.row_count}}/{{s.expected_count}}</td>
             <td><span class="tag" :class="{bad:s.completeness!=='完整'}">{{s.completeness}}</span></td>
-            <td><button class="ghost" @click="evaluate(s.id)">重裁</button></td>
+            <td>{{s.release_status}}</td>
+            <td style="white-space:nowrap">
+              <button class="ghost" @click="openDetail(s.id)">详情</button>
+              <button class="ghost" :disabled="!canWrite" @click="evaluate(s.id)">重裁</button>
+              <button class="ghost" :disabled="!canWrite" @click="recut(s)">重切</button>
+            </td>
           </tr></tbody></table>
         </div>
         <div class="panel">
@@ -127,36 +190,97 @@ createApp({
           <div class="row"><div><label>切片号</label><input v-model="form.slice_no"/></div><div><label>业务日</label><input v-model="form.biz_date"/></div></div>
           <div class="row"><div><label>分区</label><input v-model="form.partition_key"/></div><div><label>实收</label><input type="number" v-model.number="form.row_count"/></div></div>
           <label>期望</label><input type="number" v-model.number="form.expected_count"/>
-          <button class="primary" @click="createSlice">写入登记</button>
+          <button class="primary" :disabled="!canWrite" @click="createSlice">写入登记</button>
           <div class="err">{{actionErr}}</div>
         </div>
       </div>
-      <div v-show="tab===1" class="panel">
-        <h2>完整度裁决</h2>
-        <table><thead><tr><th>切片</th><th>缺口</th><th>结论</th><th>放行态</th></tr></thead>
-        <tbody><tr v-for="s in slices" :key="'c'+s.id">
-          <td class="mono">{{s.slice_no}}</td><td class="mono">{{Math.max(s.expected_count-s.row_count,0)}}</td>
-          <td>{{s.completeness}}</td><td>{{s.release_status}}</td>
-        </tr></tbody></table>
+      <div v-show="tab===1" class="grid">
+        <div class="panel">
+          <h2>完整度裁决</h2>
+          <table><thead><tr><th>切片</th><th>缺口</th><th>结论</th><th>放行态</th></tr></thead>
+          <tbody><tr v-for="s in slices" :key="'c'+s.id">
+            <td class="mono">{{s.slice_no}}</td><td class="mono">{{Math.max(s.expected_count-s.row_count,0)}}</td>
+            <td>{{s.completeness}}</td><td>{{s.release_status}}</td>
+          </tr></tbody></table>
+        </div>
+        <div class="panel">
+          <h2>详情旁注</h2>
+          <div v-if="detailErr" class="err">{{detailErr}}</div>
+          <div v-if="!detail" class="note">在“在途切片”点“详情”查看切片旁注与写入鉴权说明。</div>
+          <div v-else>
+            <div class="mono">{{detail.slice.slice_no}}</div>
+            <div class="note">{{detail.slice.biz_date}} / {{detail.slice.partition_key}} · {{detail.slice.row_count}}/{{detail.slice.expected_count}} · {{detail.slice.completeness}} · {{detail.slice.release_status}}</div>
+            <h3>写入鉴权旁注</h3>
+            <div class="note" :style="{color: detail.can_write ? '' : 'var(--warn)'}">{{detail.auth_note}}</div>
+            <h3>操作留痕</h3>
+            <table><thead><tr><th>动作</th><th>账号</th><th>角色</th><th>时间</th></tr></thead>
+            <tbody><tr v-for="o in detail.ops.slice(0,6)" :key="o.id"><td>{{o.action}}</td><td>{{o.actor}}</td><td>{{o.role}}</td><td class="mono">{{o.created_at}}</td></tr>
+            <tr v-if="!detail.ops.length"><td colspan="4" class="note">暂无操作记录</td></tr></tbody></table>
+          </div>
+        </div>
       </div>
       <div v-show="tab===2" class="grid">
         <div class="panel">
           <h2>申请放行</h2>
-          <label>切片</label><select v-model.number="releaseSliceId"><option v-for="s in slices" :value="s.id">{{s.slice_no}}（{{s.completeness}}）</option></select>
+          <label>切片</label><select v-model.number="releaseSliceId"><option v-for="s in slices" :value="s.id">{{s.slice_no}}（{{s.completeness}} / {{s.release_status}}）</option></select>
           <label>下游</label><input v-model="consumer"/>
-          <button class="primary" @click="doRelease">放行</button>
+          <button class="primary" :disabled="!canWrite" @click="doRelease">放行</button>
+          <button class="ghost" :disabled="!canWrite" style="margin-left:8px" @click="rollbackSliceById(releaseSliceId)">回拨最近成功放行</button>
           <div class="err">{{actionErr}}</div>
+          <p class="note">放行与回拨均由服务端校验角色并按切片串行；只读令牌调用返回 403 且不改放行态与水位。</p>
         </div>
         <div class="panel">
           <h2>放行流水</h2>
-          <table><thead><tr><th>切片</th><th>下游</th><th>结果</th><th>时间</th></tr></thead>
-          <tbody><tr v-for="r in releases" :key="r.id"><td class="mono">{{r.slice_no}}</td><td>{{r.consumer}}</td><td>{{r.status}}</td><td class="mono">{{r.created_at}}</td></tr></tbody></table>
+          <table><thead><tr><th>切片</th><th>下游</th><th>结果</th><th>操作人/角色</th><th>时间</th><th></th></tr></thead>
+          <tbody><tr v-for="r in releases" :key="r.id"><td class="mono">{{r.slice_no}}</td><td>{{r.consumer}}</td><td>{{r.status}}</td><td>{{r.actor||'—'}} / {{r.actor_role||'—'}}</td><td class="mono">{{r.created_at}}</td>
+          <td><button v-if="r.status==='成功'" class="ghost" :disabled="!canWrite" @click="rollbackRelease(r)">回拨</button></td></tr></tbody></table>
         </div>
       </div>
       <div v-show="tab===3" class="panel">
         <h2>消费水位</h2>
+        <p class="note">水位随成功放行写入、随回拨同步回退；只有管理员可触发回拨。</p>
         <table><thead><tr><th>消费方</th><th>业务日</th><th>水位</th><th>来源切片</th></tr></thead>
         <tbody><tr v-for="w in watermarks" :key="w.id"><td>{{w.consumer}}</td><td>{{w.biz_date}}</td><td class="mono">{{w.watermark}}</td><td class="mono">{{w.source_slice}}</td></tr></tbody></table>
+      </div>
+      <div v-show="tab===4" class="grid">
+        <div class="panel">
+          <h2>权限列表</h2>
+          <table><thead><tr><th>角色</th><th>查看</th><th>写接口</th><th>放行</th><th>回拨</th><th>重切</th><th>登记</th></tr></thead>
+          <tbody><tr v-for="r in perms?.roles||[]" :key="r.role">
+            <td>{{r.role}}</td><td>{{r.can_read?'是':'否'}}</td><td>{{r.can_write?'是':'否'}}</td>
+            <td>{{r.can_release?'是':'否'}}</td><td>{{r.can_rollback?'是':'否'}}</td>
+            <td>{{r.can_recut?'是':'否'}}</td><td>{{r.can_register?'是':'否'}}</td>
+          </tr></tbody></table>
+          <h3>口径对照</h3>
+          <p class="note">口径 {{perms?.policy_code}}：{{policy?.rule}}</p>
+          <p class="note">鉴权拦截册：{{perms?.ledger?.path}} · {{perms?.ledger?.verified?'已校验一致':'校验未通过'}}</p>
+          <p class="note">被拒写尝试 {{perms?.reconciliation?.denied_write_attempts??0}} 次 · 鉴权争用 {{perms?.reconciliation?.contention_events??0}} 次</p>
+        </div>
+        <div class="panel">
+          <h2>清册 vs 放行流水</h2>
+          <div class="tag" :class="{bad:perms && !perms.reconciliation.consistent}">
+            {{perms && perms.reconciliation.consistent ? '一致' : '存在不一致'}}
+          </div>
+          <p class="note">成功放行共 {{perms?.release_flow?.total_success??0}} 条，按角色：<span v-for="(n,k) in perms?.release_flow?.by_role||{}" :key="k">{{k}} {{n}} 条 </span></p>
+          <table><thead><tr><th>流水</th><th>切片</th><th>操作人</th><th>角色</th><th>留痕</th><th>结论</th></tr></thead>
+          <tbody><tr v-for="f in (perms?.release_flow?.items||[]).slice(0,12)" :key="f.release_id">
+            <td>#{{f.release_id}}</td><td>{{f.consumer}}</td><td>{{f.actor}}</td><td>{{f.role}}</td>
+            <td>{{f.audited?'有':'无'}}</td><td><span class="tag" :class="{bad:!f.consistent}">{{f.consistent?'一致':'不一致'}}</span></td>
+          </tr></tbody></table>
+          <div v-if="perms && perms.reconciliation.mismatches.length" class="err">
+            <div v-for="m in perms.reconciliation.mismatches" :key="m.release_id">流水 #{{m.release_id}}：{{m.reason}}</div>
+          </div>
+        </div>
+      </div>
+      <div v-show="tab===5" class="panel">
+        <h2>鉴权事件</h2>
+        <p class="note">拒绝写与同入口争用均在此留痕，不静默通过。</p>
+        <table><thead><tr><th>时间</th><th>账号</th><th>角色</th><th>动作</th><th>事件</th><th>结果</th><th>说明</th></tr></thead>
+        <tbody><tr v-for="e in events" :key="e.id">
+          <td class="mono">{{e.ts}}</td><td>{{e.username}}</td><td>{{e.role}}</td><td>{{e.action}}</td>
+          <td><span class="tag" :class="{bad:e.event_type==='鉴权口径偏了',warn:e.event_type==='鉴权争用'}">{{e.event_type}}</span></td>
+          <td>{{e.result}}</td><td class="note">{{e.detail}}</td>
+        </tr></tbody></table>
       </div>
     </main>
   </div>`
